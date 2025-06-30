@@ -33,42 +33,62 @@ def open_notion_debug():
 
 def inject_js():
     # Leggi il codice JS da src/inject.js
-    js_path = os.path.join(os.path.dirname(__file__), '../src/inject.js')
+    js_path = os.path.join(os.path.dirname(__file__), 'inject.js')
     with open(js_path, 'r') as f:
         js_code = f.read()
-    # Trova la prima tab di Notion aperta tramite DevTools Protocol
     try:
         resp = urllib.request.urlopen('http://localhost:9222/json')
         tabs = json.load(resp)
-        # Cerca una tab di Notion (puoi raffinare il filtro se vuoi)
+        # DEBUG: stampa tutte le tab disponibili
+        print('\n[INJECT][DEBUG] Lista tab disponibili:')
         for tab in tabs:
-            if 'Notion' in tab.get('title', ''):
-                ws_url = tab['webSocketDebuggerUrl']
-                break
+            print('TAB:', tab.get('title'), tab.get('url'), tab.get('type'), tab.get('webSocketDebuggerUrl'))
+        # Scegli la tab che contiene l'ID della pagina target nell'URL
+        TARGET_PAGE_ID = '5921895b58a441c88c98fbd2cc2e093d'
+        main_tabs = [
+            tab for tab in tabs
+            if TARGET_PAGE_ID in tab.get('url', '')
+        ]
+        if main_tabs:
+            ws_url = main_tabs[0]['webSocketDebuggerUrl']
         else:
-            rumps.alert('Nessuna tab Notion trovata per injection!')
+            rumps.alert('Nessuna tab Notion principale trovata per injection!')
             return
     except Exception as e:
         rumps.alert(f'Errore connessione DevTools: {e}')
         return
-    # Inietta il JS tramite websocket
     try:
         import websocket
         import threading
-        result = {}
-        def send_js():
+        import time
+        def listen_and_inject():
             ws = websocket.create_connection(ws_url)
+            ws.send(json.dumps({"id": 2, "method": "Runtime.enable"}))
             msg = json.dumps({
                 'id': 1,
                 'method': 'Runtime.evaluate',
-                'params': {'expression': js_code}
+                'params': {'expression': js_code, 'includeCommandLineAPI': True, 'awaitPromise': False}
             })
             ws.send(msg)
-            result['resp'] = ws.recv()
+            start = time.time()
+            timeout = 5  # secondi
+            while time.time() - start < timeout:
+                try:
+                    resp = ws.recv()
+                    data = json.loads(resp)
+                    if data.get('method') == 'Runtime.consoleAPICalled':
+                        args = data['params']['args']
+                        log_text = ' '.join([str(a.get('value', '')) for a in args])
+                        print(f"[JS console.log]: {log_text}")
+                    elif data.get('id') == 1:
+                        print(f"[INJECT][DevTools Response]: {resp}")
+                except Exception as e:
+                    print('[INJECT][WebSocket error]:', e)
+                    break
             ws.close()
-        t = threading.Thread(target=send_js)
+        t = threading.Thread(target=listen_and_inject)
         t.start()
-        t.join(timeout=5)
+        t.join(timeout=7)
         rumps.notification('Notion', 'JS injection', 'Codice JS iniettato!')
     except Exception as e:
         rumps.alert(f'Errore injection: {e}')
